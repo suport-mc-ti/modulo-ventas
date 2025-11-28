@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Distribuidora Futuro - Lista de Precios</title>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+  <style>
+    :root {
+      --azul: #1e6fa7;
+      --azul-claro: #d0e7f9;
+      --fondo: #eaf4fc;
+      --texto: #333;
+      --borde: #d9e2ec;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; background: var(--fondo); color: var(--texto); margin: 0; }
+    .contenedor { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+    header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+    header img { height: 56px; width: auto; }
+    header h1 { color: var(--azul); font-size: 24px; margin: 0; }
+
+    .barra { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+    .barra input[type="text"] {
+      flex: 1; min-width: 260px; padding: 10px 12px; border: 1px solid var(--borde); border-radius: 8px; background: #fff;
+    }
+
+    table {
+      width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--borde);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08); border-radius: 8px; overflow: hidden;
+    }
+    thead th {
+      background: var(--azul); color: #fff; text-align: left; padding: 10px; font-weight: bold; border-bottom: 1px solid var(--borde);
+    }
+    tbody td { padding: 10px; border-bottom: 1px solid var(--borde); }
+    tbody tr:nth-child(even) { background: #f6fbff; }
+
+    .btn {
+      padding: 8px 12px; background: var(--azul); color: #fff; border: none; border-radius: 6px; cursor: pointer;
+    }
+    .btn:disabled { opacity: 0.6; cursor: default; }
+
+    #paginacion {
+      display: flex; justify-content: center; gap: 6px; margin: 14px 0 24px;
+    }
+    #paginacion button {
+      background: var(--azul); color: #fff; border: none; padding: 6px 10px; border-radius: 6px; cursor: pointer;
+    }
+    #paginacion button[aria-current="page"] { background: #6aa8d1; }
+
+    #overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 10;
+    }
+    #modal {
+      display: none; position: fixed; z-index: 11; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      background: #fff; border: 1px solid var(--borde); border-radius: 10px; padding: 18px; width: 320px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    #modal h3 { margin-top: 0; color: var(--azul); }
+    #modal .acciones { display: flex; gap: 10px; justify-content: flex-end; margin-top: 12px; }
+    #modal input[type="number"] { width: 100px; padding: 8px; border: 1px solid var(--borde); border-radius: 6px; }
+
+    .acciones-orden { display: flex; gap: 10px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="contenedor">
+    <header>
+      <img src="logo.png" alt="Logo aquí (png)" />
+      <h1>Lista de Precios - Distribuidora Futuro</h1>
+    </header>
+
+    <div class="barra">
+      <input type="text" id="busqueda" placeholder="Buscar por grupo, producto o código" oninput="filtrarProductos()" />
+    </div>
+
+    <table id="tabla-productos">
+      <thead>
+        <tr>
+          <th>Grupo</th>
+          <th>Producto</th>
+          <th>Código</th>
+          <th>Unidad</th>
+          <th>Precio Neto</th>
+          <th>Agregar</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div id="paginacion"></div>
+
+    <h2 style="color: var(--azul); margin-top: 24px;">Orden / Cotización</h2>
+    <table id="tabla-orden">
+      <thead>
+        <tr>
+          <th>Grupo</th>
+          <th>Producto</th>
+          <th>Código</th>
+          <th>Unidad</th>
+          <th>Cantidad</th>
+          <th>Precio Unitario</th>
+          <th>Subtotal Neto</th>
+          <th>IVA (19%)</th>
+          <th>Total</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <div class="acciones-orden">
+      <button class="btn" onclick="generarExcel('orden')">Generar Orden de Venta</button>
+      <button class="btn" onclick="generarExcel('cotizacion')">Generar Cotización</button>
+      <button class="btn" onclick="limpiarOrden()">Limpiar orden</button>
+    </div>
+  </div>
+
+  <div id="overlay"></div>
+  <div id="modal">
+    <h3>Agregar a Orden</h3>
+    <label>Cantidad: <input type="number" id="cantidad" value="1" min="1" /></label>
+    <div class="acciones">
+      <button class="btn" onclick="confirmarAgregar()">Agregar</button>
+      <button class="btn" onclick="cerrarModal()">Cerrar</button>
+    </div>
+  </div>
+  <script>
+  let productos = [];
+  let productosFiltrados = [];
+  let productoSeleccionado = null;
+  const orden = [];
+  const TAM_PAG = 25;
+
+  // Cargar el Excel automáticamente al abrir
+  window.addEventListener("DOMContentLoaded", () => {
+    cargarExcelInicial();
+  });
+
+  async function cargarExcelInicial() {
+    try {
+      const res = await fetch("precios.xlsx");
+      const data = await res.arrayBuffer();
+      const libro = XLSX.read(data, { type: "array" });
+      const hoja = libro.Sheets[libro.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(hoja);
+
+      productos = json.map(p => ({
+        codgrupo: p["CODGRUPO"] || "",
+        grupo: p["GRUPO"] || "",
+        producto: p["PRODUCTO"] || "",
+        codigo: p["CODIGO"] || "",
+        unidad: p["UNIDAD"] || "",
+        precio: parseFloat((p["$NETO"] || "0").toString().replace(",", ".")) || 0
+      }));
+
+      productosFiltrados = [...productos];
+      mostrarProductos(1);
+    } catch (err) {
+      console.error("Error cargando precios.xlsx:", err);
+      alert("No se pudo cargar 'precios.xlsx'. Asegúrate de que el archivo esté en la misma carpeta que el HTML.");
+    }
+  }
+
+  // Render de productos con paginación
+  function mostrarProductos(pagina = 1) {
+    const tbody = document.querySelector("#tabla-productos tbody");
+    tbody.innerHTML = "";
+
+    const total = productosFiltrados.length;
+    const totalPaginas = Math.max(1, Math.ceil(total / TAM_PAG));
+    const pag = Math.min(Math.max(1, pagina), totalPaginas);
+    const inicio = (pag - 1) * TAM_PAG;
+    const fin = inicio + TAM_PAG;
+    const lista = productosFiltrados.slice(inicio, fin);
+
+    for (const prod of lista) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${prod.grupo}</td>
+        <td>${prod.producto}</td>
+        <td>${prod.codigo}</td>
+        <td>${prod.unidad}</td>
+        <td>$${Math.round(prod.precio).toLocaleString()}</td>
+        <td><button class="btn" onclick='abrirModal(${JSON.stringify(prod)})'>Agregar</button></td>
+      `;
+      tbody.appendChild(tr);
+    }
+
+    renderPaginacion(pag, totalPaginas);
+  }
+
+  // Barra de paginación estilizada
+  function renderPaginacion(paginaActual, totalPaginas) {
+    const cont = document.getElementById("paginacion");
+    cont.innerHTML = "";
+
+    // Botón anterior
+    const prev = document.createElement("button");
+    prev.textContent = "«";
+    prev.disabled = paginaActual <= 1;
+    prev.onclick = () => mostrarProductos(paginaActual - 1);
+    cont.appendChild(prev);
+
+    // Núcleos de páginas (máximo 7 botones)
+    const maxBtns = 7;
+    let start = Math.max(1, paginaActual - Math.floor(maxBtns / 2));
+    let end = Math.min(totalPaginas, start + maxBtns - 1);
+    if (end - start + 1 < maxBtns) start = Math.max(1, end - maxBtns + 1);
+
+    for (let i = start; i <= end; i++) {
+      const btn = document.createElement("button");
+      btn.textContent = i;
+      btn.setAttribute("aria-current", i === paginaActual ? "page" : "false");
+      btn.onclick = () => mostrarProductos(i);
+      cont.appendChild(btn);
+    }
+
+    // Botón siguiente
+    const next = document.createElement("button");
+    next.textContent = "»";
+    next.disabled = paginaActual >= totalPaginas;
+    next.onclick = () => mostrarProductos(paginaActual + 1);
+    cont.appendChild(next);
+  }
+
+  // Búsqueda
+  function filtrarProductos() {
+    const t = document.getElementById("busqueda").value.trim().toLowerCase();
+    if (!t) {
+      productosFiltrados = [...productos];
+    } else {
+      productosFiltrados = productos.filter(p =>
+        (p.producto || "").toLowerCase().includes(t) ||
+        (p.codigo || "").toLowerCase().includes(t) ||
+        (p.grupo || "").toLowerCase().includes(t)
+      );
+    }
+    mostrarProductos(1);
+  }
+
+  // Modal
+  function abrirModal(prod) {
+    productoSeleccionado = prod;
+    document.getElementById("cantidad").value = 1;
+    document.getElementById("overlay").style.display = "block";
+    document.getElementById("modal").style.display = "block";
+  }
+  function cerrarModal() {
+    document.getElementById("overlay").style.display = "none";
+    document.getElementById("modal").style.display = "none";
+  }
+
+  // Orden
+  function confirmarAgregar() {
+    const cantidad = parseInt(document.getElementById("cantidad").value, 10) || 1;
+    orden.push({ ...productoSeleccionado, cantidad });
+    actualizarOrden();
+    cerrarModal();
+  }
+  function limpiarOrden() {
+    orden.length = 0;
+    actualizarOrden();
+  }
+
+  function actualizarOrden() {
+    const tbody = document.querySelector("#tabla-orden tbody");
+    tbody.innerHTML = "";
+    for (const item of orden) {
+      const neto = item.precio * item.cantidad;
+      const iva = neto * 0.19;
+      const total = neto + iva;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${item.grupo}</td>
+        <td>${item.producto}</td>
+        <td>${item.codigo}</td>
+        <td>${item.unidad}</td>
+        <td>${item.cantidad}</td>
+        <td>$${Math.round(item.precio).toLocaleString()}</td>
+        <td>$${Math.round(neto).toLocaleString()}</td>
+        <td>$${Math.round(iva).toLocaleString()}</td>
+        <td>$${Math.round(total).toLocaleString()}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+</script>
+<script>
+  function generarExcel(tipo) {
+    const datos = orden.map(item => {
+      const neto = item.precio * item.cantidad;
+      const iva = neto * 0.19;
+      const total = neto + iva;
+      return {
+        "Grupo": item.grupo,
+        "Producto": item.producto,
+        "Código": item.codigo,
+        "Unidad": item.unidad,
+        "Cantidad": item.cantidad,
+        "Precio Unitario": item.precio,
+        "Subtotal Neto": neto,
+        "IVA (19%)": iva,
+        "Total": total
+      };
+    });
+
+    const totalNeto = datos.reduce((s, i) => s + i["Subtotal Neto"], 0);
+    const totalIVA = datos.reduce((s, i) => s + i["IVA (19%)"], 0);
+    const totalGeneral = datos.reduce((s, i) => s + i["Total"], 0);
+
+    datos.push({
+      "Grupo": "",
+      "Producto": "TOTAL",
+      "Código": "",
+      "Unidad": "",
+      "Cantidad": "",
+      "Precio Unitario": "",
+      "Subtotal Neto": totalNeto,
+      "IVA (19%)": totalIVA,
+      "Total": totalGeneral
+    });
+
+    // Crear hoja
+    const ws = XLSX.utils.json_to_sheet(datos);
+
+    // Insertar placeholder de logo arriba del todo
+    XLSX.utils.sheet_add_aoa(ws, [["LOGO AQUÍ (png)"]], { origin: "A1" });
+
+    // Mover los datos una fila hacia abajo (para dejar espacio al logo)
+    // Nota: ya agregamos la fila en A1, los encabezados quedan en la fila 2.
+    const range = XLSX.utils.decode_range(ws["!ref"]);
+
+    // Estilo encabezados (fila 2)
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const addr = XLSX.utils.encode_cell({ r: 1, c: C }); // r:1 = segunda fila
+      if (ws[addr]) {
+        ws[addr].s = {
+          fill: { fgColor: { rgb: "1E6FA7" } },
+          font: { color: { rgb: "FFFFFF" }, bold: true }
+        };
+      }
+    }
+
+    // Estilo fila de TOTAL (última fila)
+    const totalRowIndex = range.e.r; // última fila del rango actual
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const addr = XLSX.utils.encode_cell({ r: totalRowIndex, c: C });
+      if (ws[addr]) {
+        ws[addr].s = {
+          fill: { fgColor: { rgb: "D0E7F9" } },
+          font: { bold: true }
+        };
+      }
+    }
+
+    // Crear libro y guardar
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, tipo === "orden" ? "Orden de Venta" : "Cotización");
+    XLSX.writeFile(wb, `${tipo === "orden" ? "Orden_de_Venta" : "Cotizacion"}.xlsx`);
+  }
+</script>
+</body>
+</html>
